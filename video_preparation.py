@@ -186,7 +186,7 @@ def setup_rotation_gui(
     )
 
 
-def _preview_photo(frame, maximum_width=520, maximum_height=340):
+def _preview_photo(frame, maximum_width=320, maximum_height=200):
     height, width = frame.shape[:2]
     scale = min(maximum_width / width, maximum_height / height, 1.0)
     if scale < 1.0:
