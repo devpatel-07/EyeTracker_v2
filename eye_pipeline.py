@@ -22,10 +22,14 @@ from video_preparation import (
     setup_rotation_gui,
     video_dimensions,
 )
+from debug_tools.profiler import Profiler
 
 
 HERE = Path(__file__).resolve().parent
 
+# Debug tool presets
+PROFILE = True
+profiler = Profiler(PROFILE)
 
 # Left and right video path preset variables
 
@@ -197,13 +201,20 @@ def process_frame_loop(
         if not left_ok or not right_ok:
             break
 
+        # Start frame loop profiler
+        profiler.start()
+
         left_frame = rotate_frame(left_frame, left_frame_rotation)
         right_frame = rotate_frame(right_frame, right_frame_rotation)
 
         timestamp_s = frame_index / fps
 
+        profiler.clear()
+
         left_pupil = pupil_detector.detect(left_frame, LEFT_ROI)
         right_pupil = pupil_detector.detect(right_frame, RIGHT_ROI)
+
+        profiler.checkpoint("Pupil Detection")
 
         left_corrected_ellipse = left_calibration.undistort_ellipse(
             left_pupil.ellipse
@@ -211,6 +222,8 @@ def process_frame_loop(
         right_corrected_ellipse = right_calibration.undistort_ellipse(
             right_pupil.ellipse
         )
+
+        profiler.checkpoint("Pupil Undistortion")
 
         left_estimate = left_eye_model.update(
             left_corrected_ellipse,
@@ -224,6 +237,8 @@ def process_frame_loop(
             timestamp_s,
             right_frame,
         )
+
+        profiler.checkpoint("Eye Model Update")
 
         left_output = create_output_frame(
             left_frame,
@@ -240,6 +255,8 @@ def process_frame_loop(
             right_estimate,
         )
 
+        profiler.checkpoint("Visual Output")
+
         # Conditional to enable/disable text output depending on preset
         if TEXT_OUTPUT:
             print_frame_features("left", timestamp_s, left_estimate)
@@ -249,12 +266,17 @@ def process_frame_loop(
         cv2.namedWindow("Left Eye", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.namedWindow("Right Eye", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 
+        profiler.clear()
+
         # Show each output eye window
         cv2.imshow("Left Eye", left_output)
         cv2.imshow("Right Eye", right_output)
         if cv2.waitKey(WAIT_MS) & 0xFF == ord("q"):
             break
         frame_index += 1
+
+        profiler.checkpoint("Window Display")
+        profiler.end()
 
 
 if __name__ == "__main__":
