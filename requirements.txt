@@ -1,0 +1,15 @@
+# Recommended Python version: 3.11
+# To install: pip install -r requirements.txt
+
+# NumPy 1.x is used for compatibility with the older pye3d binary package
+numpy==1.26.4
+
+# OpenCV is used for video input, image processing, ellipse fitting, calibration,
+# and display windows
+opencv-python==4.10.0.84
+
+# The included pupil-model checkpoint was saved with PyTorch 2.12.0
+torch==2.12.0
+
+# 3D eye-model estimation. Version 0.3.2 provides a CPython 3.11 Windows wheel
+pye3d==0.3.2

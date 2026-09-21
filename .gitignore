@@ -6,8 +6,4 @@ __pycache__/
 .vscode/
 
 # Reference Files
-calibration_stage.py
-ml_pupil_detection_stage.py
-pye3d_estimation_stage.py
-README.md
-run_pipeline.py
+ml_training/
