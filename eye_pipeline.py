@@ -3,14 +3,14 @@
 from pathlib import Path
 
 import cv2
-
+import time
 
 # Import Scripts
 
 from calibration import CameraCalibration
 from eye_model_estimation import EyeModelEstimator
 from feature_output import create_output_frame, print_frame_features
-from pupil_detection import load_pupil_detector
+from pupil_detection_erosion import load_pupil_detector
 from video_preparation import (
     matching_video_fps,
     open_video,
@@ -195,7 +195,13 @@ def process_frame_loop(
     right_eye_model,
 ):
     frame_index = 0
+
+    FPS_SUM = 0
+    FPS_N = 0
+
     while MAX_FRAMES <= 0 or frame_index < MAX_FRAMES:
+        start_t = time.perf_counter()
+
         left_ok, left_frame = left_video.read()
         right_ok, right_frame = right_video.read()
         if not left_ok or not right_ok:
@@ -214,16 +220,12 @@ def process_frame_loop(
         left_pupil = pupil_detector.detect(left_frame, LEFT_ROI)
         right_pupil = pupil_detector.detect(right_frame, RIGHT_ROI)
 
-        profiler.checkpoint("Pupil Detection")
-
         left_corrected_ellipse = left_calibration.undistort_ellipse(
             left_pupil.ellipse
         )
         right_corrected_ellipse = right_calibration.undistort_ellipse(
             right_pupil.ellipse
         )
-
-        profiler.checkpoint("Pupil Undistortion")
 
         left_estimate = left_eye_model.update(
             left_corrected_ellipse,
@@ -239,6 +241,10 @@ def process_frame_loop(
         )
 
         profiler.checkpoint("Eye Model Update")
+
+        FPS_SUM += 1 / (time.perf_counter() - start_t)
+        FPS_N += 1
+        print("AVG FPS", FPS_SUM / FPS_N)
 
         left_output = create_output_frame(
             left_frame,
