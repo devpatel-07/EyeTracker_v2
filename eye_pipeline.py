@@ -8,7 +8,7 @@ import cv2
 # Import Scripts
 
 from calibration import CameraCalibration
-from eye_model_estimation import EyeModelEstimator
+from eye_normal_estimation import EyeModelEstimator
 from feature_output import create_output_frame, print_frame_features
 from pupil_detection import load_pupil_detector
 from video_preparation import (
@@ -64,6 +64,7 @@ DEVICE = "auto"
 MASK_THRESHOLD = 0.5
 MIN_CONFIDENCE = 0.60
 EYE_RADIUS_MM = 12.0
+PUPIL_RADIUS_MM = 2.5
 
 
 # Output preset variables
@@ -151,12 +152,12 @@ def run_pipeline():
         left_eye_model = EyeModelEstimator(
             left_calibration,
             min_confidence=MIN_CONFIDENCE,
-            eye_radius_mm=EYE_RADIUS_MM,
+            pupil_radius_mm=PUPIL_RADIUS_MM,
         )
         right_eye_model = EyeModelEstimator(
             right_calibration,
             min_confidence=MIN_CONFIDENCE,
-            eye_radius_mm=EYE_RADIUS_MM,
+            pupil_radius_mm=PUPIL_RADIUS_MM,
         )
 
         process_frame_loop(

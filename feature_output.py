@@ -1,7 +1,6 @@
 # Import dependencies
-
+import numpy as np
 import math
-
 import cv2
 
 
@@ -10,6 +9,7 @@ EYE_CENTER_COLOR = (255, 255, 0)
 EYE_TO_PUPIL_COLOR = (255, 150, 50)
 PUPIL_ELLIPSE_COLOR = (20, 255, 255)
 GAZE_RAY_COLOR = (200, 255, 0)
+NORMAL_VECTOR_COLOR = (0, 255, 0)
 
 
 def _value(value, digits=3):
@@ -131,19 +131,90 @@ def draw_pye3d_features(frame, estimate):
         cv2.LINE_AA,
     )
 
+# Projects one 3D normal vector onto the output frame - function
+
+def render_line(output, K, solution, color):
+    c_cam = np.asarray(solution["center_3d"], dtype=np.float64)
+    n_cam = np.asarray(solution["normal_3d"], dtype=np.float64)
+
+    p2_3d = c_cam + n_cam * 0.2
+
+    points_3d = np.stack(
+        [c_cam, p2_3d]
+    ).reshape(-1, 1, 3)
+
+    pts_2d, _ = cv2.projectPoints(
+        points_3d,
+        np.zeros(3),
+        np.zeros(3),
+        K,
+        None,
+    )
+
+    pt1_2d, pt2_2d = pts_2d.reshape(2, 2)
+
+    cv2.line(
+        output,
+        (int(pt1_2d[0]), int(pt1_2d[1])),
+        (int(pt2_2d[0]), int(pt2_2d[1])),
+        color,
+        5,
+    )
+
+
+# Displays the possible pupil normal vectors - function
+
+def draw_normal_features(frame, estimate):
+    if not estimate.ready:
+        return
+
+    if estimate.camera_matrix is None:
+        return
+
+    if (
+        estimate.pupil_center_mm is not None
+        and estimate.normal_vector is not None
+    ):
+        solution = {
+            "center_3d": estimate.pupil_center_mm,
+            "normal_3d": estimate.normal_vector,
+        }
+
+        render_line(
+            frame,
+            estimate.camera_matrix,
+            solution,
+            NORMAL_VECTOR_COLOR,
+        )
+
+    if (
+        estimate.alternate_pupil_center_mm is not None
+        and estimate.alternate_normal_vector is not None
+    ):
+        alternate_solution = {
+            "center_3d": estimate.alternate_pupil_center_mm,
+            "normal_3d": estimate.alternate_normal_vector,
+        }
+
+        render_line(
+            frame,
+            estimate.camera_matrix,
+            alternate_solution,
+            NORMAL_VECTOR_COLOR,
+        )
 
 def create_output_frame(frame, side, roi, pupil_observation, estimate):
     output = frame.copy()
     x, y, width, height = (int(value) for value in roi)
     cv2.rectangle(output, (x, y), (x + width, y + height), (255, 0, 0), 1)
     draw_pupil_ellipse(output, pupil_observation)
-    draw_pye3d_features(output, estimate)
+    draw_normal_features(output, estimate)
 
     if pupil_observation.blink:
         status = "no pupil / blink"
         color = (0, 180, 255)
     elif estimate.ready:
-        status = "pye3d ready"
+        status = "normal ready"
         color = (0, 220, 0)
     else:
         status = estimate.status
