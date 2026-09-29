@@ -247,6 +247,7 @@ def process_frame_loop(
             LEFT_ROI,
             left_pupil,
             left_estimate,
+            left_calibration
         )
         right_output = create_output_frame(
             right_frame,
@@ -254,6 +255,7 @@ def process_frame_loop(
             RIGHT_ROI,
             right_pupil,
             right_estimate,
+            right_calibration
         )
 
         profiler.checkpoint("Visual Output")

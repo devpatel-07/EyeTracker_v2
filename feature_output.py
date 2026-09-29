@@ -133,7 +133,7 @@ def draw_pye3d_features(frame, estimate):
 
 # Projects one 3D normal vector onto the output frame - function
 
-def render_line(output, K, solution, color):
+def render_line(output, calibration, solution, color):
     c_cam = np.asarray(solution["center_3d"], dtype=np.float64)
     n_cam = np.asarray(solution["normal_3d"], dtype=np.float64)
 
@@ -147,24 +147,27 @@ def render_line(output, K, solution, color):
         points_3d,
         np.zeros(3),
         np.zeros(3),
-        K,
+        calibration.video_camera_matrix,
         None,
     )
 
-    pt1_2d, pt2_2d = pts_2d.reshape(2, 2)
+    # Convert pts_2d from calibrated camera matrix to raw camera matrix for display
+    display_points = calibration.distort_points(pts_2d.reshape(-1,2))
+    pt1_2d, pt2_2d = display_points
 
     cv2.line(
         output,
         (int(pt1_2d[0]), int(pt1_2d[1])),
         (int(pt2_2d[0]), int(pt2_2d[1])),
         color,
-        5,
+        thickness = 5,
+        lineType = cv2.LINE_AA
     )
 
 
 # Displays the possible pupil normal vectors - function
 
-def draw_normal_features(frame, estimate):
+def draw_normal_features(frame, estimate, calibration):
     if not estimate.ready:
         return
 
@@ -182,11 +185,11 @@ def draw_normal_features(frame, estimate):
 
         render_line(
             frame,
-            estimate.camera_matrix,
+            calibration,
             solution,
             NORMAL_VECTOR_COLOR,
         )
-
+        
     if (
         estimate.alternate_pupil_center_mm is not None
         and estimate.alternate_normal_vector is not None
@@ -198,17 +201,17 @@ def draw_normal_features(frame, estimate):
 
         render_line(
             frame,
-            estimate.camera_matrix,
+            calibration,
             alternate_solution,
             NORMAL_VECTOR_COLOR,
         )
 
-def create_output_frame(frame, side, roi, pupil_observation, estimate):
+def create_output_frame(frame, side, roi, pupil_observation, estimate, calibration):
     output = frame.copy()
     x, y, width, height = (int(value) for value in roi)
     cv2.rectangle(output, (x, y), (x + width, y + height), (255, 0, 0), 1)
     draw_pupil_ellipse(output, pupil_observation)
-    draw_normal_features(output, estimate)
+    draw_normal_features(output, estimate, calibration)
 
     if pupil_observation.blink:
         status = "no pupil / blink"
