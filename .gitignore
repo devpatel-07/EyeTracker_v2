@@ -7,3 +7,10 @@ __pycache__/
 
 # Reference Files
 ml_training/
+
+# Local environments, caches, and generated review results
+.venv/
+.DS_Store
+*.log
+blink_validation_data/
+glint_runs/
