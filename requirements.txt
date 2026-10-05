@@ -13,3 +13,6 @@ torch==2.12.0
 
 # 3D eye-model estimation. Version 0.3.2 provides a CPython 3.11 Windows wheel
 pye3d==0.3.2
+
+# Receives live eye camera streams from webcam_stream.py
+pyzmq==27.2.0

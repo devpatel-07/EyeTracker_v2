@@ -7,3 +7,6 @@ __pycache__/
 
 # Reference Files
 ml_training/
+eye_data.csv
+left_eye.mp4
+right_eye.mp4

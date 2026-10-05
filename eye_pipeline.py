@@ -8,30 +8,48 @@ import cv2
 # Import Scripts
 
 from calibration import CameraCalibration
-from eye_model_estimation import EyeModelEstimator
-from feature_output import create_output_frame, print_frame_features
+from data_logger import DataLogger
+from eye_model_estimation import EyeModelEstimator, gaze_direction_from_eye_model
+from feature_output import (
+    create_output_frame,
+    print_expected_eye_distance,
+    print_frame_features,
+    print_gaze_point,
+)
+from gaze_estimation import GazeEstimator
 from pupil_detection import load_pupil_detector
 from video_preparation import (
-    matching_video_fps,
-    open_video,
-    read_first_frame,
-    reset_video,
+    frame_dimensions,
     rotate_frame,
     rotated_video_dimensions,
     select_eye_video,
     setup_rotation_gui,
-    video_dimensions,
 )
+from video_sources import EyeStream, open_video_pair
 from debug_tools.profiler import Profiler
 
 
 HERE = Path(__file__).resolve().parent
 
 # Debug tool presets
-PROFILE = True
+PROFILE = False
 profiler = Profiler(PROFILE)
 
-# Left and right video path preset variables
+# Video source preset variable. "stream" uses live eye camera streams and "file" uses recorded eye videos
+
+VIDEO_SOURCE = "file"
+
+
+# Live stream preset variables. Each webcam_stream.py must already be running before eye_pipeline is run
+
+LEFT_STREAM_HOST = "172.17.90.232"
+LEFT_STREAM_PORT = 5555
+RIGHT_STREAM_HOST = "172.17.90.232"
+RIGHT_STREAM_PORT = 5556
+STREAM_TIMEOUT_S = 5.0
+
+
+# Left and right video path preset variables. Only used when VIDEO_SOURCE = "file"
 
 LEFT_VIDEO_PATH = None
 RIGHT_VIDEO_PATH = None
@@ -40,14 +58,14 @@ RIGHT_VIDEO_PATH = None
 # Left eye ROI region, ROI rotation, and calibration rotation preset variables
 
 LEFT_ROI = (0, 100, 1080, 698)
-LEFT_FRAME_ROTATION = "counterclockwise"
+LEFT_FRAME_ROTATION = "none"
 LEFT_CALIBRATION_ROTATION = "none"
 
 
 # Right eye ROI region, ROI rotation, and calibration rotation preset variables
 
 RIGHT_ROI = (0, 100, 1080, 698)
-RIGHT_FRAME_ROTATION = "clockwise"
+RIGHT_FRAME_ROTATION = "none"
 RIGHT_CALIBRATION_ROTATION = "none"
 
 
@@ -66,31 +84,71 @@ MIN_CONFIDENCE = 0.60
 EYE_RADIUS_MM = 12.0
 
 
+# Person preset variables. Eye height is a percentage of standing height unless set directly
+
+PERSON_HEIGHT_MM = 69 * 25.4
+EYE_HEIGHT_RATIO = 0.936
+EYE_HEIGHT_MM = PERSON_HEIGHT_MM * EYE_HEIGHT_RATIO
+IPD_MM = 63.0
+
+
+# Glasses camera position preset variables. Yaw is the camera arm angle from straight ahead (35 degrees on the CAD),
+# and pitch is how far each camera tilts up toward the eye
+
+CAMERA_SEPARATION_MM = 113.21
+CAMERA_YAW_DEG = 35.0
+CAMERA_PITCH_DEG = 0.0
+
+
+# Gaze point preset variables. Tolerance is the largest allowed gap between left and right gaze rays
+
+GAZE_TOLERANCE_MM = 40.0
+MIN_GAZE_DISTANCE_MM = 100.0
+MAX_GAZE_DISTANCE_MM = 1000.0
+
+
 # Output preset variables
 
-TEXT_OUTPUT = False
-WAIT_MS = 30
+TEXT_OUTPUT = True
+SAVE_DATA = True
+DATA_OUTPUT_PATH = HERE / "eye_data.csv"
+WAIT_MS = 1
 MAX_FRAMES = 0
+
+
+# Opens live eye streams or recorded eye videos depending on video source preset - function
+
+def open_eye_sources():
+    if VIDEO_SOURCE == "stream":
+        left_source = EyeStream(LEFT_STREAM_HOST, LEFT_STREAM_PORT, "left", STREAM_TIMEOUT_S)
+        right_source = EyeStream(RIGHT_STREAM_HOST, RIGHT_STREAM_PORT, "right", STREAM_TIMEOUT_S)
+        return left_source, right_source
+
+    if VIDEO_SOURCE == "file":
+        left_path = select_eye_video(LEFT_VIDEO_PATH, "left")
+        if left_path is None:
+            return None, None
+        right_path = select_eye_video(RIGHT_VIDEO_PATH, "right")
+        if right_path is None:
+            return None, None
+        return open_video_pair(left_path, right_path)
+
+    raise ValueError(f"unsupported video source: {VIDEO_SOURCE}")
 
 
 # Organizes run order for one time actions before Frame Loop - function
 
 def run_pipeline():
-    left_video = None
-    right_video = None
+    left_source = None
+    right_source = None
+    data_logger = None
     try:
-        left_path = select_eye_video(LEFT_VIDEO_PATH, "left")
-        if left_path is None:
-            return
-        right_path = select_eye_video(RIGHT_VIDEO_PATH, "right")
-        if right_path is None:
+        left_source, right_source = open_eye_sources()
+        if left_source is None:
             return
 
-        left_video = open_video(left_path, "left")
-        right_video = open_video(right_path, "right")
-
-        left_preview = read_first_frame(left_video, "left")
-        right_preview = read_first_frame(right_video, "right")
+        left_preview = left_source.preview_frame()
+        right_preview = right_source.preview_frame()
         (
             left_frame_rotation,
             right_frame_rotation,
@@ -107,11 +165,8 @@ def run_pipeline():
             RIGHT_CALIBRATION_ROTATION,
         )
 
-        reset_video(left_video, "left")
-        reset_video(right_video, "right")
-
-        left_source_size = video_dimensions(left_video)
-        right_source_size = video_dimensions(right_video)
+        left_source_size = frame_dimensions(left_preview)
+        right_source_size = frame_dimensions(right_preview)
         left_size = rotated_video_dimensions(
             left_source_size,
             left_frame_rotation,
@@ -142,7 +197,6 @@ def run_pipeline():
             "right",
         )
 
-        fps = matching_video_fps(left_video, right_video)
         pupil_detector = load_pupil_detector(
             MODEL_PATH,
             device=DEVICE,
@@ -158,11 +212,24 @@ def run_pipeline():
             min_confidence=MIN_CONFIDENCE,
             eye_radius_mm=EYE_RADIUS_MM,
         )
+        gaze_estimator = GazeEstimator(
+            ipd_mm=IPD_MM,
+            eye_height_mm=EYE_HEIGHT_MM,
+            camera_separation_mm=CAMERA_SEPARATION_MM,
+            camera_yaw_deg=CAMERA_YAW_DEG,
+            camera_pitch_deg=CAMERA_PITCH_DEG,
+            tolerance_mm=GAZE_TOLERANCE_MM,
+            min_distance_mm=MIN_GAZE_DISTANCE_MM,
+            max_distance_mm=MAX_GAZE_DISTANCE_MM,
+        )
+        print_expected_eye_distance(gaze_estimator.expected_eye_distance_mm)
+
+        if SAVE_DATA:
+            data_logger = DataLogger(DATA_OUTPUT_PATH)
 
         process_frame_loop(
-            left_video,
-            right_video,
-            fps,
+            left_source,
+            right_source,
             left_frame_rotation,
             right_frame_rotation,
             left_calibration,
@@ -170,12 +237,16 @@ def run_pipeline():
             pupil_detector,
             left_eye_model,
             right_eye_model,
+            gaze_estimator,
+            data_logger,
         )
     finally:
-        if left_video is not None:
-            left_video.release()
-        if right_video is not None:
-            right_video.release()
+        if data_logger is not None:
+            data_logger.close()
+        if left_source is not None:
+            left_source.release()
+        if right_source is not None:
+            right_source.release()
         cv2.destroyAllWindows()
 
 
@@ -183,9 +254,8 @@ def run_pipeline():
 # R and L eye outputs - function
 
 def process_frame_loop(
-    left_video,
-    right_video,
-    fps,
+    left_source,
+    right_source,
     left_frame_rotation,
     right_frame_rotation,
     left_calibration,
@@ -193,12 +263,14 @@ def process_frame_loop(
     pupil_detector,
     left_eye_model,
     right_eye_model,
+    gaze_estimator,
+    data_logger=None,
 ):
     frame_index = 0
     while MAX_FRAMES <= 0 or frame_index < MAX_FRAMES:
-        left_ok, left_frame = left_video.read()
-        right_ok, right_frame = right_video.read()
-        if not left_ok or not right_ok:
+        left_frame, left_timestamp_s = left_source.read()
+        right_frame, right_timestamp_s = right_source.read()
+        if left_frame is None or right_frame is None:
             break
 
         # Start frame loop profiler
@@ -207,7 +279,8 @@ def process_frame_loop(
         left_frame = rotate_frame(left_frame, left_frame_rotation)
         right_frame = rotate_frame(right_frame, right_frame_rotation)
 
-        timestamp_s = frame_index / fps
+        # Time of the newer frame in the left and right frame pair
+        timestamp_s = max(left_timestamp_s, right_timestamp_s)
 
         profiler.clear()
 
@@ -228,17 +301,33 @@ def process_frame_loop(
         left_estimate = left_eye_model.update(
             left_corrected_ellipse,
             left_pupil.confidence,
-            timestamp_s,
+            left_timestamp_s,
             left_frame,
         )
         right_estimate = right_eye_model.update(
             right_corrected_ellipse,
             right_pupil.confidence,
-            timestamp_s,
+            right_timestamp_s,
             right_frame,
         )
 
         profiler.checkpoint("Eye Model Update")
+
+        gaze = gaze_estimator.estimate(left_estimate, right_estimate)
+
+        profiler.checkpoint("Gaze Point")
+
+        if data_logger is not None:
+            data_logger.log_frame(
+                frame_index,
+                timestamp_s,
+                left_eye_center=left_estimate.eye_center_mm,
+                left_gaze=gaze_direction_from_eye_model(left_estimate),
+                right_eye_center=right_estimate.eye_center_mm,
+                right_gaze=gaze_direction_from_eye_model(right_estimate),
+                gaze=gaze,
+            )
+            profiler.checkpoint("Data Logging")
 
         left_output = create_output_frame(
             left_frame,
@@ -246,6 +335,7 @@ def process_frame_loop(
             LEFT_ROI,
             left_pupil,
             left_estimate,
+            gaze,
         )
         right_output = create_output_frame(
             right_frame,
@@ -253,6 +343,7 @@ def process_frame_loop(
             RIGHT_ROI,
             right_pupil,
             right_estimate,
+            gaze,
         )
 
         profiler.checkpoint("Visual Output")
@@ -261,6 +352,7 @@ def process_frame_loop(
         if TEXT_OUTPUT:
             print_frame_features("left", timestamp_s, left_estimate)
             print_frame_features("right", timestamp_s, right_estimate)
+            print_gaze_point(timestamp_s, gaze)
 
         # To make windows resizeable and lock aspect ratio
         cv2.namedWindow("Left Eye", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)

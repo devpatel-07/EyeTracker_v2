@@ -217,13 +217,10 @@ def rotate_frame(frame, rotation):
     raise ValueError(f"unsupported frame rotation: {rotation}")
 
 
-# Calculates video dimensions after ROI rotation - function
+# Reads video dimensions from a frame and calculates video dimensions after ROI rotation - function
 
-def video_dimensions(capture):
-    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    if width <= 0 or height <= 0:
-        raise ValueError("video dimensions must be positive")
+def frame_dimensions(frame):
+    height, width = frame.shape[:2]
     return width, height
 
 

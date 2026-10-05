@@ -18,10 +18,18 @@ def _value(value, digits=3):
     return f"{float(value):.{digits}f}"
 
 
-def _xyz(value):
+def _xyz(value, digits=2):
     if value is None:
         return "n/a"
-    return "(" + ", ".join(_value(component, 2) for component in value) + ")"
+    return "(" + ", ".join(_value(component, digits) for component in value) + ")"
+
+
+# Calculates camera lens to pye3d eye center distance - function
+
+def _eye_distance(estimate):
+    if estimate.eye_center_mm is None:
+        return None
+    return math.hypot(*estimate.eye_center_mm)
 
 
 def _pixel_point(point):
@@ -70,6 +78,25 @@ def print_frame_features(side, timestamp_s, estimate):
         f"status={estimate.status}",
         flush=True,
     )
+
+
+# Displays per frame gaze point in head frame coordinates, ray gap, and gaze status - function
+
+def print_gaze_point(timestamp_s, gaze):
+    print(
+        f"gaze t={timestamp_s:.3f}s "
+        f"point_mm={_xyz(gaze.point_mm, 1)} "
+        f"miss_mm={_value(gaze.miss_distance_mm, 1)} "
+        f"distance_mm={_value(gaze.distance_mm, 1)} "
+        f"status={gaze.status}",
+        flush=True,
+    )
+
+
+# Displays expected camera to eye distance once so it can be compared with the eye distance shown on each window - function
+
+def print_expected_eye_distance(distance_mm):
+    print(f"Expected camera to eye center distance: {_value(distance_mm, 1)} mm", flush=True)
 
 
 # Displays uncalibrated pupil ellipse onto output frame - function
@@ -132,7 +159,7 @@ def draw_pye3d_features(frame, estimate):
     )
 
 
-def create_output_frame(frame, side, roi, pupil_observation, estimate):
+def create_output_frame(frame, side, roi, pupil_observation, estimate, gaze):
     output = frame.copy()
     x, y, width, height = (int(value) for value in roi)
     cv2.rectangle(output, (x, y), (x + width, y + height), (255, 0, 0), 1)
@@ -151,7 +178,16 @@ def create_output_frame(frame, side, roi, pupil_observation, estimate):
     _draw_text(output, f"{side}: {status}", (10, 30), color, 0.65)
     confidence_text = (
         f"pupil {estimate.pupil_confidence:.2f}  "
-        f"model {_value(estimate.model_confidence, 2)}"
+        f"model {_value(estimate.model_confidence, 2)}  "
+        f"eye {_value(_eye_distance(estimate), 0)} mm"
     )
     _draw_text(output, confidence_text, (10, 56), color, 0.5)
+
+    if gaze.valid:
+        gaze_text = f"gaze {_xyz(gaze.point_mm, 0)} mm"
+        gaze_color = (0, 220, 0)
+    else:
+        gaze_text = f"gaze: {gaze.status}"
+        gaze_color = (0, 180, 255)
+    _draw_text(output, gaze_text, (10, 82), gaze_color, 0.5)
     return output

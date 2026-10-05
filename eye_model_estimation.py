@@ -40,6 +40,23 @@ def _finite_triplet(value):
     return result
 
 
+# Calculates unit gaze from the eye center toward the pupil center - function
+
+def gaze_direction_from_eye_model(estimate):
+    if estimate is None or not estimate.ready:
+        return None
+    eye_center = _finite_triplet(estimate.eye_center_mm)
+    pupil_center = _finite_triplet(estimate.pupil_center_mm)
+    if eye_center is None or pupil_center is None:
+        return None
+
+    direction = tuple(pupil - eye for pupil, eye in zip(pupil_center, eye_center))
+    length = math.hypot(*direction)
+    if not math.isfinite(length) or length <= 1e-12:
+        return None
+    return tuple(component / length for component in direction)
+
+
 def _finite_point(value):
     try:
         result = tuple(float(component) for component in value)
