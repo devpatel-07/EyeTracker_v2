@@ -15,14 +15,21 @@ from video_preparation import (
 )
 
 
+# Eye cameras give mirrored images. Flipping horizontally gives the normal camera view pye3d and gaze estimation expect - function
+
+def unmirror_frame(frame, flip):
+    return cv2.flip(frame, 1) if flip else frame
+
+
 # Receives the newest frame from one eye camera stream started with webcam_stream.py. A background thread keeps
 # receiving so the Frame Loop always gets the most recent frame instead of an old queued one - class
 
 class EyeStream:
-    def __init__(self, host, port, side, timeout_s):
+    def __init__(self, host, port, side, timeout_s, flip):
         self.address = f"tcp://{host}:{port}"
         self.side = side
         self.timeout_s = float(timeout_s)
+        self.flip = flip
         self.start_time = time.perf_counter()
 
         self.frame = None
@@ -56,6 +63,7 @@ class EyeStream:
                 frame = cv2.imdecode(np.frombuffer(message, np.uint8), cv2.IMREAD_COLOR)
                 if frame is None:
                     continue
+                frame = unmirror_frame(frame, self.flip)
                 with self.new_frame:
                     self.frame = frame
                     self.frame_time = arrival_time - self.start_time
@@ -94,10 +102,11 @@ class EyeStream:
 # Reads frames from a recorded eye video. Timestamps come from frame number and video FPS - class
 
 class VideoFileSource:
-    def __init__(self, capture, side, fps):
+    def __init__(self, capture, side, fps, flip):
         self.capture = capture
         self.side = side
         self.fps = fps
+        self.flip = flip
         self.frame_index = 0
 
     def read(self):
@@ -106,14 +115,14 @@ class VideoFileSource:
             return None, None
         timestamp_s = self.frame_index / self.fps
         self.frame_index += 1
-        return frame, timestamp_s
+        return unmirror_frame(frame, self.flip), timestamp_s
 
     # Reads first frame for rotation setup GUI, then rewinds video back to frame 0 - function
 
     def preview_frame(self):
         frame = read_first_frame(self.capture, self.side)
         reset_video(self.capture, self.side)
-        return frame
+        return unmirror_frame(frame, self.flip)
 
     def release(self):
         self.capture.release()
@@ -121,7 +130,7 @@ class VideoFileSource:
 
 # Opens left and right eye videos and checks they have matching FPS - function
 
-def open_video_pair(left_path, right_path):
+def open_video_pair(left_path, right_path, flip):
     left_capture = open_video(left_path, "left")
     right_capture = None
     try:
@@ -133,6 +142,6 @@ def open_video_pair(left_path, right_path):
             right_capture.release()
         raise
     return (
-        VideoFileSource(left_capture, "left", fps),
-        VideoFileSource(right_capture, "right", fps),
+        VideoFileSource(left_capture, "left", fps, flip),
+        VideoFileSource(right_capture, "right", fps, flip),
     )

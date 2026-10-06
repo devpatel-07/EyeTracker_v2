@@ -11,6 +11,10 @@ EYE_TO_PUPIL_COLOR = (255, 150, 50)
 PUPIL_ELLIPSE_COLOR = (20, 255, 255)
 GAZE_RAY_COLOR = (200, 255, 0)
 
+# Largest pixel coordinate that gets drawn. While pye3d is warming up its eye model can project far outside the
+# frame, past the integer range OpenCV can draw
+MAX_DRAW_COORDINATE = 100000
+
 
 def _value(value, digits=3):
     if value is None or not math.isfinite(float(value)):
@@ -37,7 +41,16 @@ def _pixel_point(point):
         return None
     if not all(math.isfinite(float(value)) for value in point):
         return None
+    if any(abs(float(value)) > MAX_DRAW_COORDINATE for value in point):
+        return None
     return tuple(int(round(float(value))) for value in point)
+
+
+# Checks projected eye sphere center and axes are small enough to draw - function
+
+def _drawable_ellipse(ellipse):
+    center, axes, _ = ellipse
+    return _pixel_point(center) is not None and _pixel_point(axes) is not None
 
 
 def _draw_text(frame, text, origin, color, scale=0.55):
@@ -119,7 +132,10 @@ def draw_pye3d_features(frame, estimate):
     if not estimate.ready:
         return
 
-    if estimate.projected_eye_sphere is not None:
+    if (
+        estimate.projected_eye_sphere is not None
+        and _drawable_ellipse(estimate.projected_eye_sphere)
+    ):
         cv2.ellipse(
             frame,
             estimate.projected_eye_sphere,

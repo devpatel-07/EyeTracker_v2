@@ -25,6 +25,7 @@ from video_preparation import (
     select_eye_video,
     setup_rotation_gui,
 )
+from arm_communication import goToPoint
 from video_sources import EyeStream, open_video_pair
 from debug_tools.profiler import Profiler
 
@@ -37,37 +38,48 @@ profiler = Profiler(PROFILE)
 
 # Video source preset variable. "stream" uses live eye camera streams and "file" uses recorded eye videos
 
-VIDEO_SOURCE = "stream"
+VIDEO_SOURCE = "file"
+
+
+# Eye camera images are mirrored, so each frame is flipped horizontally before processing. ROIs are set on the flipped frame
+
+FLIP_FRAMES = True
 
 
 # Live stream preset variables. Each webcam_stream.py must already be running before eye_pipeline is run
 
-LEFT_STREAM_HOST = "172.20.10.6"
+LEFT_STREAM_HOST = "10.150.128.79"
 LEFT_STREAM_PORT = 5555
-RIGHT_STREAM_HOST = "172.20.10.7"
-RIGHT_STREAM_PORT = 5555
+RIGHT_STREAM_HOST = "172.17.90.232"
+RIGHT_STREAM_PORT = 5556
 STREAM_TIMEOUT_S = 5.0
 
 
 # Left and right video path preset variables. Only used when VIDEO_SOURCE = "file"
 
-LEFT_VIDEO_PATH = None
-RIGHT_VIDEO_PATH = None
+LEFT_VIDEO_PATH = None #r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_lefteye.mp4"
+RIGHT_VIDEO_PATH = None #r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_righteye.mp4"
 
 
 # Left eye ROI region, ROI rotation, and calibration rotation preset variables
 
-LEFT_ROI = (0, 100, 1080, 698)
+LEFT_ROI = (440, 100, 1080, 698) # Live
+#LEFT_ROI = (0, 100, 1080, 698) 
 LEFT_FRAME_ROTATION = "none"
 LEFT_CALIBRATION_ROTATION = "none"
 
 
 # Right eye ROI region, ROI rotation, and calibration rotation preset variables
 
-RIGHT_ROI = (0, 100, 1080, 698)
+RIGHT_ROI = (640, 200, 1080, 698) # Live
+#RIGHT_ROI = (0, 100, 1080, 698)
 RIGHT_FRAME_ROTATION = "none"
 RIGHT_CALIBRATION_ROTATION = "none"
 
+# Coordinate Conversion Variables
+d = 27
+h = 28
+o = 2.75
 
 # Camera calibration file preset variables
 
@@ -86,10 +98,10 @@ EYE_RADIUS_MM = 12.0
 
 # Person preset variables. Eye height is a percentage of standing height unless set directly
 
-PERSON_HEIGHT_MM = 69 * 25.4
-EYE_HEIGHT_RATIO = 0.936
+PERSON_HEIGHT_MM = 45 * 25.4
+EYE_HEIGHT_RATIO = 1
 EYE_HEIGHT_MM = PERSON_HEIGHT_MM * EYE_HEIGHT_RATIO
-IPD_MM = 63.0
+IPD_MM = 70.0
 
 
 # Glasses camera position preset variables. Yaw is the camera arm angle from straight ahead (35 degrees on the CAD),
@@ -120,8 +132,8 @@ MAX_FRAMES = 0
 
 def open_eye_sources():
     if VIDEO_SOURCE == "stream":
-        left_source = EyeStream(LEFT_STREAM_HOST, LEFT_STREAM_PORT, "left", STREAM_TIMEOUT_S)
-        right_source = EyeStream(RIGHT_STREAM_HOST, RIGHT_STREAM_PORT, "right", STREAM_TIMEOUT_S)
+        left_source = EyeStream(LEFT_STREAM_HOST, LEFT_STREAM_PORT, "left", STREAM_TIMEOUT_S, FLIP_FRAMES)
+        right_source = EyeStream(RIGHT_STREAM_HOST, RIGHT_STREAM_PORT, "right", STREAM_TIMEOUT_S, FLIP_FRAMES)
         return left_source, right_source
 
     if VIDEO_SOURCE == "file":
@@ -131,7 +143,7 @@ def open_eye_sources():
         right_path = select_eye_video(RIGHT_VIDEO_PATH, "right")
         if right_path is None:
             return None, None
-        return open_video_pair(left_path, right_path)
+        return open_video_pair(left_path, right_path, FLIP_FRAMES)
 
     raise ValueError(f"unsupported video source: {VIDEO_SOURCE}")
 
@@ -363,8 +375,12 @@ def process_frame_loop(
         # Show each output eye window
         cv2.imshow("Left Eye", left_output)
         cv2.imshow("Right Eye", right_output)
-        if cv2.waitKey(WAIT_MS) & 0xFF == ord("q"):
+        key = cv2.waitKey(WAIT_MS)
+        if key & 0xFF == ord("q"):
             break
+        if key & 0xFF == ord("g") and (gaze.point_mm is not None):
+            goToPoint(*gaze.point_mm,d,h,o)
+            print("Went to point")
         frame_index += 1
 
         profiler.checkpoint("Window Display")
