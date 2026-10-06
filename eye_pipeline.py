@@ -37,15 +37,15 @@ profiler = Profiler(PROFILE)
 
 # Video source preset variable. "stream" uses live eye camera streams and "file" uses recorded eye videos
 
-VIDEO_SOURCE = "file"
+VIDEO_SOURCE = "stream"
 
 
 # Live stream preset variables. Each webcam_stream.py must already be running before eye_pipeline is run
 
-LEFT_STREAM_HOST = "172.17.90.232"
+LEFT_STREAM_HOST = "172.20.10.6"
 LEFT_STREAM_PORT = 5555
-RIGHT_STREAM_HOST = "172.17.90.232"
-RIGHT_STREAM_PORT = 5556
+RIGHT_STREAM_HOST = "172.20.10.7"
+RIGHT_STREAM_PORT = 5555
 STREAM_TIMEOUT_S = 5.0
 
 
