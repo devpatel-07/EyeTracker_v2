@@ -1,4 +1,10 @@
-# Import dependencies
+"""Select paired recordings and establish their processing orientations.
+
+OpenCV supplies BGR frames; image sizes use (width, height), while array shapes
+use (height, width). ROIs are (x, y, width, height) in the rotated full frame.
+The setup GUI previews each rotation independently. It returns choices to the
+pipeline without modifying videos or saved presets.
+"""
 
 import base64
 import math
@@ -11,9 +17,12 @@ import cv2
 from calibration import VALID_ROTATIONS
 
 
-# Selects eye video when video path is not already provided - function
-
 def select_eye_video(video_path, side):
+    """Resolve a supplied path, or show a file chooser and return None on cancel.
+
+    ``side`` is a human-readable eye label used in prompts and error messages.
+    An invalid supplied path raises instead of silently opening the chooser.
+    """
     if video_path is not None:
         path = Path(video_path).expanduser().resolve()
         if not path.is_file():
@@ -36,9 +45,8 @@ def select_eye_video(video_path, side):
     return Path(selected).resolve() if selected else None
 
 
-# Opens video and confirms video can be read - function
-
 def open_video(video_path, side):
+    """Return an opened VideoCapture; the caller owns its eventual release."""
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         capture.release()
@@ -47,6 +55,10 @@ def open_video(video_path, side):
 
 
 def read_first_frame(capture, side):
+    """Read a preview at the current position, advancing the capture by one frame.
+
+    The pipeline calls this immediately after opening and resets before playback.
+    """
     success, frame = capture.read()
     if not success or frame is None:
         raise RuntimeError(f"could not read first frame from {side} eye video")
@@ -54,14 +66,11 @@ def read_first_frame(capture, side):
 
 
 def reset_video(capture, side):
+    """Seek to frame zero so setup previews do not remove a frame from processing."""
     if not capture.set(cv2.CAP_PROP_POS_FRAMES, 0):
         raise RuntimeError(f"could not reset {side} eye video to frame 0")
 
 
-
-# Creates primary GUI used to set up video rotation, dimensions, etc. Functionality includes being able to see two first frames of each eye video
-# Each frame is either to show ROI rotation or calibration rotation preset. Buttons allow for 90 degree frame rotations that show and determine preset
-# for both ROI and calibration. Confirm button locks presets and closes window - function
 
 def setup_rotation_gui(
     left_frame,
@@ -73,7 +82,18 @@ def setup_rotation_gui(
     left_calibration_rotation,
     right_calibration_rotation,
 ):
-    # Uses stored presets passed from eye_pipeline.py as initial frame rotations in window
+    """Preview and return frame/calibration rotations for each eye.
+
+    Frame panels show the ROI after the selected rotation; ROIs themselves are
+    fixed pixel rectangles and cannot be edited here. Calibration panels rotate
+    the source preview as a visual aid; they do not load a calibration image or
+    automatically infer alignment. CameraCalibration later interprets that choice
+    as calibration-to-source rotation, then adds the chosen frame rotation.
+
+    Return order is left frame, right frame, left calibration, right calibration.
+    Closing without confirmation raises, allowing pipeline cleanup to run.
+    """
+    # Local state starts from presets; confirming does not rewrite eye_pipeline.py.
     rotations = {
         "left_frame": left_frame_rotation,
         "right_frame": right_frame_rotation,
@@ -117,6 +137,7 @@ def setup_rotation_gui(
     )
 
     def update_panel(key, title, frame, roi, show_roi):
+        """Redraw one preview from its original frame to avoid cumulative rotation."""
         preview = rotate_frame(frame, rotations[key]).copy()
         if show_roi:
             x, y, width, height = (int(value) for value in roi)
@@ -129,10 +150,12 @@ def setup_rotation_gui(
             )
         photo = _preview_photo(preview)
         image_labels[key].configure(image=photo)
+        # Tk does not keep the Python image alive; retain it to prevent blank panels.
         image_labels[key].image = photo
         rotation_labels[key].configure(text=f"{title}: {rotations[key]}")
 
     def turn(key, direction):
+        """Step through the clockwise-ordered rotation names with wraparound."""
         index = VALID_ROTATIONS.index(rotations[key])
         rotations[key] = VALID_ROTATIONS[(index + direction) % 4]
         for panel in panels:
@@ -152,6 +175,7 @@ def setup_rotation_gui(
         image_labels[key].pack(pady=5)
         controls = tk.Frame(container)
         controls.pack()
+        # Bind this iteration's key now; a bare closure would use the last panel.
         tk.Button(
             controls,
             text="Rotate left",
@@ -165,6 +189,7 @@ def setup_rotation_gui(
         update_panel(*panel)
 
     def confirm():
+        """Mark an intentional confirmation before ending Tk's event loop."""
         confirmed["value"] = True
         root.destroy()
 
@@ -187,6 +212,11 @@ def setup_rotation_gui(
 
 
 def _preview_photo(frame, maximum_width=320, maximum_height=200):
+    """Fit a BGR preview inside the bounds, keeping aspect ratio and no upscaling.
+
+    PNG encoding lets Tk read the OpenCV image without a separate imaging library.
+    These dimensions affect only setup thumbnails, never detection resolution.
+    """
     height, width = frame.shape[:2]
     scale = min(maximum_width / width, maximum_height / height, 1.0)
     if scale < 1.0:
@@ -203,9 +233,11 @@ def _preview_photo(frame, maximum_width=320, maximum_height=200):
 
 
 
-# Rotates frame according to ROI rotation preset - function
-
 def rotate_frame(frame, rotation):
+    """Apply a named quarter-turn/half-turn to the entire decoded image.
+
+    With ``none``, return the original array; callers that draw should copy first.
+    """
     if rotation == "clockwise":
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     if rotation == "counterclockwise":
@@ -217,9 +249,8 @@ def rotate_frame(frame, rotation):
     raise ValueError(f"unsupported frame rotation: {rotation}")
 
 
-# Calculates video dimensions after ROI rotation - function
-
 def video_dimensions(capture):
+    """Read source (width, height) from the capture before any frame rotation."""
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if width <= 0 or height <= 0:
@@ -228,6 +259,7 @@ def video_dimensions(capture):
 
 
 def rotated_video_dimensions(size, rotation):
+    """Return processed (width, height); only quarter-turns swap the dimensions."""
     width, height = (int(value) for value in size)
     if rotation in {"clockwise", "counterclockwise"}:
         return height, width
@@ -236,9 +268,13 @@ def rotated_video_dimensions(size, rotation):
     raise ValueError(f"unsupported frame rotation: {rotation}")
 
 
-# Checks that left and right videos have valid matching FPS - function
-
 def matching_video_fps(left_capture, right_capture):
+    """Validate FPS metadata within 0.01 FPS and use the left rate for timestamps.
+
+    Matching rates do not establish synchronization: frame zero alignment and
+    constant-rate recordings are assumptions of the pipeline's frame pairing.
+    Different recording lengths are allowed; processing stops at the shorter one.
+    """
     left_fps = float(left_capture.get(cv2.CAP_PROP_FPS))
     right_fps = float(right_capture.get(cv2.CAP_PROP_FPS))
     if not all(
