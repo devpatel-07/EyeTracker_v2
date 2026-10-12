@@ -8,7 +8,7 @@ def mm2in(mm):
 # x points back toward the person, y to the person's left, z up
 def convert_coords(gx, gy, gz, d, h, o):
 
-    rx = d - mm2in(gx)
+    rx = abs(d - mm2in(gx))
     ry = mm2in(gy)
     rz = mm2in(gz) - (h + o)
 

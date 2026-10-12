@@ -54,7 +54,7 @@ def stream_camera(camera_index, port):
         socket.close()
 
 
-# Run once per eye camera, e.g. "python webcam_stream.py --camera 1 --port 5555" for the left eye
+# Run once per eye camera, e.g. "python webcam_stream.py --camera 1 --port 5555"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream one eye camera to eye_pipeline")

@@ -10,3 +10,7 @@ ml_training/
 eye_data.csv
 left_eye.mp4
 right_eye.mp4
+
+# Local test files
+stream_video.py
+stream_video_2.py

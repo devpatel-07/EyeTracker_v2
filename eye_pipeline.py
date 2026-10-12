@@ -37,58 +37,50 @@ PROFILE = False
 profiler = Profiler(PROFILE)
 
 # Video source preset variable. "stream" uses live eye camera streams and "file" uses recorded eye videos
-
 VIDEO_SOURCE = "file"
 
 
 # Eye camera images are mirrored, so each frame is flipped horizontally before processing. ROIs are set on the flipped frame
-
 FLIP_FRAMES = True
 
 
 # Live stream preset variables. Each webcam_stream.py must already be running before eye_pipeline is run
-
-LEFT_STREAM_HOST = "10.150.128.79"
+LEFT_STREAM_HOST = "172.20.10.6"
 LEFT_STREAM_PORT = 5555
-RIGHT_STREAM_HOST = "172.17.90.232"
-RIGHT_STREAM_PORT = 5556
+RIGHT_STREAM_HOST = "172.20.10.2"
+RIGHT_STREAM_PORT = 5555
 STREAM_TIMEOUT_S = 5.0
 
 
 # Left and right video path preset variables. Only used when VIDEO_SOURCE = "file"
-
-LEFT_VIDEO_PATH = None #r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_lefteye.mp4"
-RIGHT_VIDEO_PATH = None #r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_righteye.mp4"
+LEFT_VIDEO_PATH = r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_lefteye.mp4"
+RIGHT_VIDEO_PATH = r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15 17-10-39_righteye.mp4"
 
 
 # Left eye ROI region, ROI rotation, and calibration rotation preset variables
-
-LEFT_ROI = (440, 100, 1080, 698) # Live
-#LEFT_ROI = (0, 100, 1080, 698) 
-LEFT_FRAME_ROTATION = "none"
+#LEFT_ROI = (440, 200, 1080, 698) # Live video
+LEFT_ROI = (0, 100, 1080, 698) 
+LEFT_FRAME_ROTATION = "clockwise"
 LEFT_CALIBRATION_ROTATION = "none"
 
 
 # Right eye ROI region, ROI rotation, and calibration rotation preset variables
-
-RIGHT_ROI = (640, 200, 1080, 698) # Live
-#RIGHT_ROI = (0, 100, 1080, 698)
-RIGHT_FRAME_ROTATION = "none"
+#RIGHT_ROI = (640, 200, 1080, 698) # Live video
+RIGHT_ROI = (0, 100, 1080, 698)
+RIGHT_FRAME_ROTATION = "counterclockwise"
 RIGHT_CALIBRATION_ROTATION = "none"
 
 # Coordinate Conversion Variables
-d = 27
-h = 28
-o = 2.75
+d = 22 # distance from arm
+h = 33.5 # height of table the arm is on
+o = 2.75 # offset from table to shoulder servo base
 
 # Camera calibration file preset variables
-
 LEFT_CALIBRATION_PATH = HERE / "camera_calibration.npz"
 RIGHT_CALIBRATION_PATH = HERE / "camera_calibration.npz"
 
 
 # Pupil detection and pye3d preset variables
-
 MODEL_PATH = HERE / "models" / "finetuned_2026-08-25" / "pupil_unet_best.pt"
 DEVICE = "auto"
 MASK_THRESHOLD = 0.5
@@ -97,8 +89,7 @@ EYE_RADIUS_MM = 12.0
 
 
 # Person preset variables. Eye height is a percentage of standing height unless set directly
-
-PERSON_HEIGHT_MM = 45 * 25.4
+PERSON_HEIGHT_MM = 48 * 25.4
 EYE_HEIGHT_RATIO = 1
 EYE_HEIGHT_MM = PERSON_HEIGHT_MM * EYE_HEIGHT_RATIO
 IPD_MM = 70.0
@@ -106,21 +97,18 @@ IPD_MM = 70.0
 
 # Glasses camera position preset variables. Yaw is the camera arm angle from straight ahead (35 degrees on the CAD),
 # and pitch is how far each camera tilts up toward the eye
-
 CAMERA_SEPARATION_MM = 113.21
 CAMERA_YAW_DEG = 35.0
 CAMERA_PITCH_DEG = 0.0
 
 
 # Gaze point preset variables. Tolerance is the largest allowed gap between left and right gaze rays
-
 GAZE_TOLERANCE_MM = 40.0
 MIN_GAZE_DISTANCE_MM = 100.0
 MAX_GAZE_DISTANCE_MM = 1000.0
 
 
 # Output preset variables
-
 TEXT_OUTPUT = True
 SAVE_DATA = True
 DATA_OUTPUT_PATH = HERE / "eye_data.csv"
@@ -378,12 +366,15 @@ def process_frame_loop(
         key = cv2.waitKey(WAIT_MS)
         if key & 0xFF == ord("q"):
             break
-        if key & 0xFF == ord("g") and (gaze.point_mm is not None):
-            goToPoint(*gaze.point_mm,d,h,o)
-            print("Went to point")
         frame_index += 1
 
         profiler.checkpoint("Window Display")
+
+        # Move Robotic Arm if user presses 'g'
+        if key & 0xFF == ord("g") and (gaze.point_mm is not None):
+            goToPoint(*gaze.point_mm,d,h,o) 
+            print("Went to point")
+            
         profiler.end()
 
 
