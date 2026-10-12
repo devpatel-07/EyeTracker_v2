@@ -5,5 +5,7 @@ __pycache__/
 # Local editor settings
 .vscode/
 
-# Reference Files
-ml_training/
+# Local Data
+eye_data.csv
+left_eye.mp4
+right_eye.mp4
