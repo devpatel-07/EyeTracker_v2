@@ -1,0 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu130
+numpy==1.26.3
+opencv-python
+torch==2.12.0
