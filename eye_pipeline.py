@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 
 # Import Scripts
@@ -26,8 +27,10 @@ from video_preparation import (
     setup_rotation_gui,
 )
 from arm_communication import goToPoint
-from video_sources import EyeStream, open_video_pair
+from video_sources import DirectWebcamSource, DummyEyeSource, EyeStream, open_video_pair
 from debug_tools.profiler import Profiler
+from coord_convert import log_live_gaze_vectors
+import tracker
 
 
 HERE = Path(__file__).resolve().parent
@@ -36,15 +39,28 @@ HERE = Path(__file__).resolve().parent
 PROFILE = False
 profiler = Profiler(PROFILE)
 
-# Video source preset variable. "stream" uses live eye camera streams and "file" uses recorded eye videos
-VIDEO_SOURCE = "file"
+# Video source preset variable.
+# "usb" uses direct local USB camera indices (no webcam_stream.py needed)
+# "stream" uses network eye camera streams via webcam_stream.py
+# "file" uses recorded eye videos
+VIDEO_SOURCE = "usb"
 
 
 # Eye camera images are mirrored, so each frame is flipped horizontally before processing. ROIs are set on the flipped frame
 FLIP_FRAMES = True
 
 
+# Camera enable presets: set to False (or set index to None) to ignore a camera
+ENABLE_LEFT_EYE = True
+ENABLE_RIGHT_EYE = False
+
+# Direct USB camera index presets. Only used when VIDEO_SOURCE = "usb"
+LEFT_CAMERA_INDEX = 0
+RIGHT_CAMERA_INDEX = None
+
+
 # Live stream preset variables. Each webcam_stream.py must already be running before eye_pipeline is run
+# Only used when VIDEO_SOURCE = "stream"
 LEFT_STREAM_HOST = "172.20.10.6"
 LEFT_STREAM_PORT = 5555
 RIGHT_STREAM_HOST = "172.20.10.2"
@@ -59,7 +75,7 @@ RIGHT_VIDEO_PATH = r"C:\Users\devpa\UTAustin\ECLAIR\EyeTracker_v2\cam_2026-08-15
 
 # Left eye ROI region, ROI rotation, and calibration rotation preset variables
 #LEFT_ROI = (440, 200, 1080, 698) # Live video
-LEFT_ROI = (0, 100, 1080, 698) 
+LEFT_ROI = (200, 100, 1080, 880)
 LEFT_FRAME_ROTATION = "clockwise"
 LEFT_CALIBRATION_ROTATION = "none"
 
@@ -115,13 +131,47 @@ DATA_OUTPUT_PATH = HERE / "eye_data.csv"
 WAIT_MS = 1
 MAX_FRAMES = 0
 
+# Base camera / ArUco tracking presets
+ENABLE_BASE_CAM_TRACKER = True
+BASE_CAM_INDEX = 1
+BASE_CAM_WIDTH = 1920
+BASE_CAM_HEIGHT = 1080
+BASE_CALIBRATION_PATH = HERE / "base_camera_calibration.npz"
+BASE_FOCUS_STEPS = (0.0, 28.0, 57.0, 85.0, 113.0, 142.0, 170.0, 198.0, 227.0, 255.0)
+BASE_FOCUS_SETTLE_FRAMES = 0
+BASE_FOCUS_HOLD_FRAMES = 5
+ARUCO_MARKER_ID = 1
+ARUCO_MARKER_MM = 20.0
+ARUCO_THRESHOLD = False
+ARUCO_DEBLUR = False
+LIVE_GAZE_LOG_PATH = HERE / "live_gaze_vectors.txt"
+
 
 # Opens live eye streams or recorded eye videos depending on video source preset - function
 
 def open_eye_sources():
+    if VIDEO_SOURCE == "usb":
+        if ENABLE_LEFT_EYE and LEFT_CAMERA_INDEX is not None:
+            left_source = DirectWebcamSource(LEFT_CAMERA_INDEX, "left", FLIP_FRAMES)
+        else:
+            left_source = DummyEyeSource("left")
+
+        if ENABLE_RIGHT_EYE and RIGHT_CAMERA_INDEX is not None:
+            right_source = DirectWebcamSource(RIGHT_CAMERA_INDEX, "right", FLIP_FRAMES)
+        else:
+            right_source = DummyEyeSource("right")
+        return left_source, right_source
+
     if VIDEO_SOURCE == "stream":
-        left_source = EyeStream(LEFT_STREAM_HOST, LEFT_STREAM_PORT, "left", STREAM_TIMEOUT_S, FLIP_FRAMES)
-        right_source = EyeStream(RIGHT_STREAM_HOST, RIGHT_STREAM_PORT, "right", STREAM_TIMEOUT_S, FLIP_FRAMES)
+        if ENABLE_LEFT_EYE:
+            left_source = EyeStream(LEFT_STREAM_HOST, LEFT_STREAM_PORT, "left", STREAM_TIMEOUT_S, FLIP_FRAMES)
+        else:
+            left_source = DummyEyeSource("left")
+
+        if ENABLE_RIGHT_EYE:
+            right_source = EyeStream(RIGHT_STREAM_HOST, RIGHT_STREAM_PORT, "right", STREAM_TIMEOUT_S, FLIP_FRAMES)
+        else:
+            right_source = DummyEyeSource("right")
         return left_source, right_source
 
     if VIDEO_SOURCE == "file":
@@ -227,6 +277,60 @@ def run_pipeline():
         if SAVE_DATA:
             data_logger = DataLogger(DATA_OUTPUT_PATH)
 
+        # Base camera tracker initialization
+        base_cap = None
+        base_matrix = None
+        base_distortion = None
+        aruco_detector = None
+        stepped_focus = None
+        if ENABLE_BASE_CAM_TRACKER:
+            try:
+                base_cap = cv2.VideoCapture(BASE_CAM_INDEX)
+                base_cap.set(cv2.CAP_PROP_FRAME_WIDTH, BASE_CAM_WIDTH)
+                base_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, BASE_CAM_HEIGHT)
+                if base_cap.isOpened():
+                    tracker.lock_camera_focus(base_cap)
+                    stepped_focus = tracker.SteppedAutofocus(
+                        base_cap,
+                        BASE_FOCUS_STEPS,
+                        settle_frames=BASE_FOCUS_SETTLE_FRAMES,
+                        hold_frames=BASE_FOCUS_HOLD_FRAMES,
+                    )
+                if base_cap.isOpened() and BASE_CALIBRATION_PATH.exists():
+                    base_matrix, base_distortion = tracker.camera_model(
+                        BASE_CALIBRATION_PATH, (BASE_CAM_WIDTH, BASE_CAM_HEIGHT)
+                    )
+                    aruco_detector = tracker.detector()
+                elif not base_cap.isOpened():
+                    print(f"Warning: Base camera index {BASE_CAM_INDEX} could not be opened.")
+                    base_cap = None
+            except Exception as e:
+                print(f"Base camera tracker setup failed: {e}")
+                base_cap = None
+
+        print("\nBase camera / ArUco settings")
+        print(f"  enabled: {ENABLE_BASE_CAM_TRACKER}")
+        print(f"  camera: {BASE_CAM_INDEX} ({BASE_CAM_WIDTH}x{BASE_CAM_HEIGHT})")
+        print(f"  marker: ID {ARUCO_MARKER_ID}, {ARUCO_MARKER_MM:g} mm")
+        print(f"  calibration: {BASE_CALIBRATION_PATH}")
+        print(f"  grayscale: True, threshold: {ARUCO_THRESHOLD}")
+        print(f"  deblur: {ARUCO_DEBLUR}")
+        aruco_params = tracker.detector_parameters()
+        print(
+            "  relaxed detection: "
+            f"min perimeter {aruco_params.minMarkerPerimeterRate}, "
+            f"border error {aruco_params.maxErroneousBitsInBorderRate}, "
+            f"error correction {aruco_params.errorCorrectionRate}"
+        )
+        print(
+            f"  stepped focus: {BASE_FOCUS_STEPS}; settle "
+            f"{BASE_FOCUS_SETTLE_FRAMES} frames; hold {BASE_FOCUS_HOLD_FRAMES} frames\n"
+        )
+
+        # Reset / initialize live log file
+        with open(LIVE_GAZE_LOG_PATH, "w", encoding="utf-8") as f:
+            f.write("# Live Gaze Vectors and ArUco Pose Log\n")
+
         process_frame_loop(
             left_source,
             right_source,
@@ -239,8 +343,15 @@ def run_pipeline():
             right_eye_model,
             gaze_estimator,
             data_logger,
+            base_cap=base_cap,
+            base_matrix=base_matrix,
+            base_distortion=base_distortion,
+            aruco_detector=aruco_detector,
+            stepped_focus=stepped_focus,
         )
     finally:
+        if 'base_cap' in locals() and base_cap is not None:
+            base_cap.release()
         if data_logger is not None:
             data_logger.close()
         if left_source is not None:
@@ -265,13 +376,28 @@ def process_frame_loop(
     right_eye_model,
     gaze_estimator,
     data_logger=None,
+    base_cap=None,
+    base_matrix=None,
+    base_distortion=None,
+    aruco_detector=None,
+    stepped_focus=None,
 ):
     frame_index = 0
-    while MAX_FRAMES <= 0 or frame_index < MAX_FRAMES:
+    aruco_deblurrer = None
+    while True:
         left_frame, left_timestamp_s = left_source.read()
         right_frame, right_timestamp_s = right_source.read()
         if left_frame is None or right_frame is None:
-            break
+            # Dropped/late frame: keep running, only 'q' stops the pipeline
+            print(
+                f"Missing frame at index {frame_index}: "
+                f"left {'missing' if left_frame is None else 'ok'}, "
+                f"right {'missing' if right_frame is None else 'ok'}"
+            )
+            if cv2.waitKey(WAIT_MS) & 0xFF == ord("q"):
+                print(f"Pipeline stopped at frame {frame_index}: 'q' pressed")
+                break
+            continue
 
         # Start frame loop profiler
         profiler.start()
@@ -313,9 +439,123 @@ def process_frame_loop(
 
         profiler.checkpoint("Eye Model Update")
 
+        left_direction = gaze_estimator.head_gaze_direction(left_estimate, gaze_estimator.left_rotation)
+        right_direction = gaze_estimator.head_gaze_direction(right_estimate, gaze_estimator.right_rotation)
+
         gaze = gaze_estimator.estimate(left_estimate, right_estimate)
 
         profiler.checkpoint("Gaze Point")
+
+        # Track ArUco marker from base camera and log vectors
+        base_display_frame = None
+        if base_cap is not None and aruco_detector is not None:
+            ok, base_frame = base_cap.read()
+            if ok and base_frame is not None:
+                if stepped_focus is not None:
+                    stepped_focus.update(base_frame)
+                gray = cv2.cvtColor(base_frame, cv2.COLOR_BGR2GRAY)
+                detection_image = tracker.otsu_threshold(gray) if ARUCO_THRESHOLD else gray
+                base_display_frame = cv2.cvtColor(detection_image, cv2.COLOR_GRAY2BGR)
+                if ARUCO_DEBLUR:
+                    # Build the FFT filters once, and rebuild only if the
+                    # camera unexpectedly changes resolution.
+                    if aruco_deblurrer is None or aruco_deblurrer.shape != gray.shape:
+                        aruco_deblurrer = tracker.Deblurrer(gray.shape)
+                    corners, ids, preprocessing_stage = tracker.detect_deblurred(
+                        aruco_detector,
+                        aruco_deblurrer,
+                        gray,
+                        ARUCO_MARKER_ID,
+                        threshold=ARUCO_THRESHOLD,
+                    )
+                else:
+                    corners, ids, _ = aruco_detector.detectMarkers(detection_image)
+                    preprocessing_stage = "grayscale"
+
+                cv2.putText(
+                    base_display_frame,
+                    f"ArUco preprocessing: {preprocessing_stage}",
+                    (20, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                )
+                if stepped_focus is not None:
+                    cv2.putText(
+                        base_display_frame,
+                        stepped_focus.status,
+                        (20, 105),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (0, 255, 255),
+                        2,
+                    )
+                if ids is not None:
+                    cv2.aruco.drawDetectedMarkers(base_display_frame, corners, ids)
+                    matches = np.flatnonzero(ids.flatten() == ARUCO_MARKER_ID)
+                    if matches.size:
+                        pose = tracker.estimate_pose(
+                            corners[int(matches[0])],
+                            ARUCO_MARKER_MM,
+                            base_matrix,
+                            base_distortion,
+                        )
+                        if pose is not None:
+                            error, rvec, tvec = pose
+                            xyz = tvec.ravel()
+                            angles = tracker.euler_degrees(cv2.Rodrigues(rvec)[0])
+                            cv2.drawFrameAxes(
+                                base_display_frame,
+                                base_matrix,
+                                base_distortion,
+                                rvec,
+                                tvec,
+                                ARUCO_MARKER_MM * 0.5,
+                                2,
+                            )
+                            cv2.putText(
+                                base_display_frame,
+                                f"ID {ARUCO_MARKER_ID}: X={xyz[0]:.1f} Y={xyz[1]:.1f} Z={xyz[2]:.1f} mm",
+                                (20, 40),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.8,
+                                (0, 255, 0),
+                                2,
+                            )
+                            log_live_gaze_vectors(
+                                LIVE_GAZE_LOG_PATH,
+                                left_direction,
+                                right_direction,
+                                float(xyz[0]),
+                                float(xyz[1]),
+                                float(xyz[2]),
+                                float(angles[0]),
+                                float(angles[1]),
+                                float(angles[2]),
+                            )
+                else:
+                    cv2.putText(
+                        base_display_frame,
+                        f"ID {ARUCO_MARKER_ID}: NOT DETECTED",
+                        (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 0, 255),
+                        2,
+                    )
+                    # Marker not currently visible in this frame
+                    log_live_gaze_vectors(
+                        LIVE_GAZE_LOG_PATH,
+                        left_direction,
+                        right_direction,
+                        float("nan"),
+                        float("nan"),
+                        float("nan"),
+                        float("nan"),
+                        float("nan"),
+                        float("nan"),
+                    )
 
         if data_logger is not None:
             data_logger.log_frame(
@@ -357,14 +597,19 @@ def process_frame_loop(
         # To make windows resizeable and lock aspect ratio
         cv2.namedWindow("Left Eye", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.namedWindow("Right Eye", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        if base_display_frame is not None:
+            cv2.namedWindow("Base Camera ArUco Tracker", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
 
         profiler.clear()
 
         # Show each output eye window
         cv2.imshow("Left Eye", left_output)
         cv2.imshow("Right Eye", right_output)
+        if base_display_frame is not None:
+            cv2.imshow("Base Camera ArUco Tracker", base_display_frame)
         key = cv2.waitKey(WAIT_MS)
         if key & 0xFF == ord("q"):
+            print(f"Pipeline stopped at frame {frame_index}: 'q' pressed")
             break
         frame_index += 1
 

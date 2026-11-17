@@ -1,15 +1,8 @@
-# Track a phone-displayed ArUco marker with your webcam
-
-Runs locally on your computer with Python 3.10–3.12. The phone only displays an image;
-the computer's webcam does all detection. No phone app, phone camera, or server is required.
-
 ## 1. Install (Mac / Linux)
 
 ```bash
 python -m pip install -r requirements.txt
 ```
-
-
 
 ## 2. Put the marker on your phone
 
@@ -37,8 +30,18 @@ For a black square that measures 50 mm on your phone:
 python tracker.py track --marker-mm 50
 ```
 
+Tracking defaults to full-resolution grayscale detection without thresholding. Optional
+Otsu black/white thresholding can be enabled with `--threshold`; downsampling can be
+enabled explicitly, for example with `--detection-scale 0.5`.
+
 Press **q** to quit or **s** to save an annotated frame.
 If the wrong camera opens, add `--camera 1` (or 2).
+Tracking replaces continuous autofocus with a stepped controller. It samples ten
+manual lens positions (`0,28,57,85,113,142,170,198,227,255`) with no settling delay, locks the sharpest
+for 5 frames, and then
+rescans. Customize the device-specific positions with, for example,
+`--focus-steps 10,30,50,70,90,110,130,150,170,190`, or change the rescan interval with
+`--focus-hold-frames`. Camera focus ranges and backend support vary by model.
 
 This preview assumes a 60-degree horizontal field of view and zero lens distortion.
 **Its distances and angles are approximate.** You can supply a known horizontal FOV

@@ -1,0 +1,2 @@
+# Live Gaze Vectors and ArUco Pose Log
+left_vector_head=[0.5025, 0.8642, 0.0263] | right_vector_head=[None] | left_vector_cam=[0.9629, -0.2284, -0.1437] | right_vector_cam=[None] | aruco_pos_mm=[-113.21, -151.28, 609.51]

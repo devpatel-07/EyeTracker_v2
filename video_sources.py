@@ -99,6 +99,69 @@ class EyeStream:
         self.thread.join(timeout=1.0)
 
 
+# Dummy source for disabled or unavailable cameras - class
+
+class DummyEyeSource:
+    def __init__(self, side, width=1920, height=1080):
+        self.side = side
+        self.width = width
+        self.height = height
+        self.start_time = time.perf_counter()
+        self.blank_frame = np.zeros((height, width, 3), dtype=np.uint8)
+        cv2.putText(
+            self.blank_frame,
+            f"{side.upper()} CAMERA DISABLED / NO STREAM",
+            (50, height // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.5,
+            (0, 0, 255),
+            3,
+            cv2.LINE_AA,
+        )
+
+    def read(self):
+        return self.blank_frame.copy(), time.perf_counter() - self.start_time
+
+    def preview_frame(self):
+        return self.blank_frame.copy()
+
+    def release(self):
+        pass
+
+
+# Reads live frames directly from a local USB camera by device index - class
+
+class DirectWebcamSource:
+    def __init__(self, camera_index, side, flip, width=1920, height=1080):
+        self.side = side
+        self.flip = flip
+        self.start_time = time.perf_counter()
+        self.capture = cv2.VideoCapture(camera_index)
+        if not self.capture.isOpened():
+            raise RuntimeError(f"could not open {side} eye camera index {camera_index}")
+
+        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    def read(self):
+        success, frame = self.capture.read()
+        if not success or frame is None:
+            return None, None
+        timestamp_s = time.perf_counter() - self.start_time
+        return unmirror_frame(frame, self.flip), timestamp_s
+
+    def preview_frame(self):
+        frame, _ = self.read()
+        if frame is None:
+            raise RuntimeError(f"could not read preview frame from {self.side} camera")
+        return frame
+
+    def release(self):
+        self.capture.release()
+
+
 # Reads frames from a recorded eye video. Timestamps come from frame number and video FPS - class
 
 class VideoFileSource:

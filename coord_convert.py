@@ -28,7 +28,7 @@ def gaze_to_eye_midpoint_origin(point_mm, eye_height_mm):
         point_mm: (x, y, z) in mm where z=0 is ground level.
         eye_height_mm: height of the eye midpoint above the ground in mm.
     Output:
-        (x, y, z) in mm with origin at the eye midpoint.
+        (x, y, z) in mm with origin at the eye midpoint (center of glasses).
     """
     gx, gy, gz = point_mm
     return (gx, gy, gz - eye_height_mm)
@@ -88,49 +88,107 @@ HEAD_TO_ARUCO_ROTATION = np.array([
 ])
 
 
-def gaze_to_base_camera(
-    gaze_point_mm,
+def vector_to_base_camera(
+    vector,
+    roll_deg,
+    pitch_deg,
+    yaw_deg,
+    is_marker_basis=False,
+):
+    """
+    Transforms a direction vector into the base camera frame.
+    Because this is a vector (direction), translation does NOT apply;
+    only the rotation is applied.
+
+    Parameters:
+        vector: (vx, vy, vz) direction vector.
+        roll_deg, pitch_deg, yaw_deg: Orientation of ArUco marker from tracker.py.
+        is_marker_basis: True if vector is already in marker coordinates,
+                         False if in head coordinates (x forward, y left, z up).
+
+    Returns:
+        (vx_cam, vy_cam, vz_cam): unit direction vector relative to base camera.
+    """
+    v = np.asarray(vector, dtype=float)
+    norm = np.linalg.norm(v)
+    if norm > 1e-12:
+        v = v / norm
+
+    if not is_marker_basis:
+        v_marker = HEAD_TO_ARUCO_ROTATION @ v
+    else:
+        v_marker = v
+
+    r_cam_marker = aruco_to_camera_matrix(0, 0, 0, roll_deg, pitch_deg, yaw_deg)[:3, :3]
+    v_cam = r_cam_marker @ v_marker
+    v_cam_norm = np.linalg.norm(v_cam)
+    if v_cam_norm > 1e-12:
+        v_cam = v_cam / v_cam_norm
+
+    return tuple(float(x) for x in v_cam)
+
+
+def log_live_gaze_vectors(
+    filepath,
+    left_vector_head,
+    right_vector_head,
     x_mm,
     y_mm,
     z_mm,
     roll_deg,
     pitch_deg,
     yaw_deg,
-    eye_height_mm=None,
-    is_marker_basis=False,
+    mode="w",
 ):
     """
-    Transforms a gaze point into coordinates relative to the base camera.
+    Writes the latest gaze vectors and ArUco pose to a .txt file.
 
-    Parameters:
-        gaze_point_mm: (gx, gy, gz) in mm.
-        x_mm, y_mm, z_mm: Position of ArUco marker in base camera frame (from tracker.py).
-        roll_deg, pitch_deg, yaw_deg: Orientation of ArUco marker in degrees (from tracker.py).
-        eye_height_mm: If gaze_point_mm has origin on the ground, provide eye_height_mm
-                       to shift origin to eye midpoint. If already centered at eye midpoint, leave as None.
-        is_marker_basis: If True, gaze_point_mm is already expressed in the ArUco marker basis.
-                         If False (default), gaze_point_mm is in the standard head frame
-                         (x forward, y left, z up) and is mapped into the ArUco marker basis.
+    The default write mode replaces the previous snapshot instead of growing
+    the file once per frame. Pass a different mode only when history is wanted.
 
-    Returns:
-        (x_cam, y_cam, z_cam): Gaze point coordinates in mm relative to the base camera optical frame.
+    Logged data:
+      1. Left eye gaze vector in head frame (x forward, y left, z up)
+      2. Right eye gaze vector in head frame (x forward, y left, z up)
+      3. Left eye gaze vector transformed to base camera frame
+      4. Right eye gaze vector transformed to base camera frame
+      5. ArUco marker position relative to base camera (x_mm, y_mm, z_mm)
     """
-    # 1. Shift origin from ground to eye midpoint if eye_height_mm is specified
-    if eye_height_mm is not None:
-        p_head = np.array(gaze_to_eye_midpoint_origin(gaze_point_mm, eye_height_mm), dtype=float)
+    if left_vector_head is not None:
+        left_cam = vector_to_base_camera(left_vector_head, roll_deg, pitch_deg, yaw_deg)
+        lh_str = f"{left_vector_head[0]:.4f}, {left_vector_head[1]:.4f}, {left_vector_head[2]:.4f}"
+        lc_str = f"{left_cam[0]:.4f}, {left_cam[1]:.4f}, {left_cam[2]:.4f}"
     else:
-        p_head = np.array(gaze_point_mm, dtype=float)
+        lh_str = "None"
+        lc_str = "None"
 
-    # 2. Convert to ArUco marker basis if starting in head frame
-    if not is_marker_basis:
-        p_marker = HEAD_TO_ARUCO_ROTATION @ p_head
+    if right_vector_head is not None:
+        right_cam = vector_to_base_camera(right_vector_head, roll_deg, pitch_deg, yaw_deg)
+        rh_str = f"{right_vector_head[0]:.4f}, {right_vector_head[1]:.4f}, {right_vector_head[2]:.4f}"
+        rc_str = f"{right_cam[0]:.4f}, {right_cam[1]:.4f}, {right_cam[2]:.4f}"
     else:
-        p_marker = p_head
+        rh_str = "None"
+        rc_str = "None"
 
-    # 3. Apply the ArUco-to-camera transformation matrix template
-    t_cam_marker = aruco_to_camera_matrix(x_mm, y_mm, z_mm, roll_deg, pitch_deg, yaw_deg)
+    aruco_pos_str = f"{x_mm:.2f}, {y_mm:.2f}, {z_mm:.2f}"
 
-    p_marker_homo = np.array([p_marker[0], p_marker[1], p_marker[2], 1.0])
-    p_cam_homo = t_cam_marker @ p_marker_homo
+    line = (
+        f"left_vector_head=[{lh_str}] | "
+        f"right_vector_head=[{rh_str}] | "
+        f"left_vector_cam=[{lc_str}] | "
+        f"right_vector_cam=[{rc_str}] | "
+        f"aruco_pos_mm=[{aruco_pos_str}]\n"
+    )
 
-    return tuple(float(v) for v in p_cam_homo[:3])
+    with open(filepath, mode, encoding="utf-8") as f:
+        if mode == "w":
+            f.write("# Live Gaze Vectors and ArUco Pose Log\n")
+        f.write(line)
+        f.flush()
+
+    return {
+        "left_vector_head": left_vector_head,
+        "right_vector_head": right_vector_head,
+        "left_vector_cam": left_cam if left_vector_head is not None else None,
+        "right_vector_cam": right_cam if right_vector_head is not None else None,
+        "aruco_pos_mm": (x_mm, y_mm, z_mm),
+    }

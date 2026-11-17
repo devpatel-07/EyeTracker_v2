@@ -6,11 +6,68 @@ import tracker
 
 
 class TrackingTests(unittest.TestCase):
+    class FakeCapture:
+        def __init__(self):
+            self.focus_values = []
+
+        def set(self, prop, value):
+            if prop == cv2.CAP_PROP_FOCUS:
+                self.focus_values.append(value)
+            return True
+
     def test_generated_marker_detects_correct_id(self):
         for marker_id in (0, 17, 99):
             corners, ids, _ = tracker.detector().detectMarkers(tracker.marker_image(marker_id))
             self.assertEqual(ids.flatten().tolist(), [marker_id])
             self.assertEqual(len(corners), 1)
+
+    def test_detector_uses_relaxed_tolerances(self):
+        params = tracker.detector_parameters()
+        self.assertEqual(params.minMarkerPerimeterRate, 0.015)
+        self.assertEqual(params.maxErroneousBitsInBorderRate, 0.80)
+        self.assertEqual(params.errorCorrectionRate, 0.90)
+
+    def test_preprocessed_detection_finds_blurred_marker(self):
+        marker_id = 17
+        image = tracker.marker_image(marker_id, pixels=300)
+        blurred = cv2.GaussianBlur(image, (0, 0), 3.0)
+        deblurrer = tracker.Deblurrer(blurred.shape)
+
+        corners, ids, stage = tracker.detect_deblurred(
+            tracker.detector(), deblurrer, blurred, marker_id
+        )
+
+        self.assertIsNotNone(ids)
+        self.assertIn(marker_id, ids.flatten())
+        self.assertIn(stage, ("raw", "unsharp", "deblur s=1.5", "deblur s=3.0", "deblur s=5.0"))
+        self.assertGreater(len(corners), 0)
+
+    def test_downsampled_threshold_corners_restore_to_source_scale(self):
+        marker_id = 17
+        source = cv2.cvtColor(tracker.marker_image(marker_id, pixels=300), cv2.COLOR_GRAY2BGR)
+        scale = 0.5
+        gray = tracker.downsample_gray(source, scale)
+        corners, ids, _ = tracker.detect_deblurred(
+            tracker.detector(), tracker.Deblurrer(gray.shape), gray, marker_id, threshold=True
+        )
+        restored = tracker.restore_corner_scale(corners, scale)
+
+        self.assertIn(marker_id, ids.flatten())
+        self.assertGreater(float(np.max(restored[0])), float(np.max(corners[0])))
+
+    def test_stepped_autofocus_only_uses_configured_positions(self):
+        capture = self.FakeCapture()
+        positions = (0, 10, 20, 30, 40, 50, 60, 70, 80, 90)
+        controller = tracker.SteppedAutofocus(
+            capture, positions, settle_frames=0, hold_frames=2
+        )
+        frame = np.zeros((32, 32, 3), np.uint8)
+        for _ in range(10):
+            controller.update(frame)
+
+        self.assertTrue(capture.focus_values)
+        self.assertTrue(set(capture.focus_values).issubset(set(positions)))
+        self.assertTrue(controller.holding)
 
     def test_known_pose_recovered(self):
         matrix = np.array([[1000., 0, 640], [0, 1000., 360], [0, 0, 1]])

@@ -24,10 +24,24 @@ HEIGHT = 1080
 DEFAULT_CALIBRATION = Path(__file__).resolve().parent / 'camera_calibration.npz'
 
 
-def detector():
+def detector_parameters():
+    """Return moderately permissive parameters for small or imperfect markers."""
     params = cv2.aruco.DetectorParameters()
     params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-    return cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(DICT), params)
+    params.adaptiveThreshWinSizeMax = 80
+    params.minMarkerPerimeterRate = 0.015
+    params.polygonalApproxAccuracyRate = 0.05
+    params.minCornerDistanceRate = 0.02
+    params.minDistanceToBorder = 1
+    params.maxErroneousBitsInBorderRate = 0.80
+    params.errorCorrectionRate = 0.90
+    return params
+
+
+def detector():
+    return cv2.aruco.ArucoDetector(
+        cv2.aruco.getPredefinedDictionary(DICT), detector_parameters()
+    )
 
 
 class Deblurrer:
@@ -66,15 +80,39 @@ class Deblurrer:
             yield f'deblur s={sigma}', self.wiener(gray, i)
 
 
-def detect_deblurred(detect, deblurrer, gray, marker_id):
+def otsu_threshold(gray):
+    """Convert a grayscale detection frame to a black/white image."""
+    if gray.ndim != 2 or gray.dtype != np.uint8:
+        raise ValueError('threshold input must be an 8-bit grayscale image')
+    return cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+
+def downsample_gray(frame, scale):
+    """Return a smaller grayscale frame for faster, lower-noise detection."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    if scale == 1.0:
+        return gray
+    return cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+
+def restore_corner_scale(corners, scale):
+    """Map corners detected in a downsampled image to the source frame."""
+    if scale == 1.0:
+        return corners
+    return tuple(corner / scale for corner in corners)
+
+
+def detect_deblurred(detect, deblurrer, gray, marker_id, threshold=False):
     """Return (corners, ids, stage_name); stops at the first stage that finds marker_id."""
     best = (), None, 'raw'
     for name, image in deblurrer.stages(gray):
-        corners, ids, _ = detect.detectMarkers(image)
+        detection_image = otsu_threshold(image) if threshold else image
+        corners, ids, _ = detect.detectMarkers(detection_image)
+        stage_name = f'{name} + Otsu B/W' if threshold else name
         if name == 'raw':
-            best = corners, ids, name
+            best = corners, ids, stage_name
         if ids is not None and marker_id in ids.flatten():
-            return corners, ids, name
+            return corners, ids, stage_name
     return best
 
 
@@ -138,7 +176,79 @@ def open_camera(args):
     if not cap.isOpened():
         cap.release()
         raise RuntimeError('Webcam unavailable. Grant camera permission or try --camera 1.')
+    lock_camera_focus(cap, args.focus)
     return cap
+
+
+def lock_camera_focus(cap, focus=None):
+    """Disable continuous autofocus and optionally set a fixed lens position."""
+    autofocus_disabled = cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+    if not autofocus_disabled:
+        print('Warning: webcam/backend does not report support for disabling autofocus.')
+    if focus is not None and not cap.set(cv2.CAP_PROP_FOCUS, focus):
+        print(f'Warning: webcam/backend did not accept manual focus value {focus}.')
+
+
+class SteppedAutofocus:
+    """Periodically choose the sharpest of a small set of manual lens positions."""
+
+    def __init__(self, cap, positions, settle_frames=0, hold_frames=5):
+        self.cap = cap
+        self.positions = tuple(positions)
+        self.settle_frames = settle_frames
+        self.hold_frames = hold_frames
+        self.index = 0
+        self.waiting = settle_frames
+        self.scores = []
+        self.holding = False
+        self.remaining = 0
+        self.current = self.positions[0]
+        self._set_focus(self.current)
+
+    def _set_focus(self, position):
+        self.current = position
+        if not self.cap.set(cv2.CAP_PROP_FOCUS, position):
+            print(f'Warning: webcam/backend did not accept stepped focus value {position}.')
+
+    @staticmethod
+    def sharpness(frame):
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        height, width = gray.shape
+        # Prefer the central field rather than high-contrast edges at the frame border.
+        roi = gray[height // 4:3 * height // 4, width // 4:3 * width // 4]
+        return float(cv2.Laplacian(roi, cv2.CV_64F).var())
+
+    def update(self, frame):
+        if self.holding:
+            self.remaining -= 1
+            if self.remaining <= 0:
+                self.holding = False
+                self.index = 0
+                self.scores.clear()
+                self._set_focus(self.positions[0])
+                self.waiting = self.settle_frames
+            return
+
+        if self.waiting > 0:
+            self.waiting -= 1
+            return
+
+        self.scores.append(self.sharpness(frame))
+        self.index += 1
+        if self.index < len(self.positions):
+            self._set_focus(self.positions[self.index])
+            self.waiting = self.settle_frames
+            return
+
+        best_index = int(np.argmax(self.scores))
+        self._set_focus(self.positions[best_index])
+        self.holding = True
+        self.remaining = self.hold_frames
+
+    @property
+    def status(self):
+        mode = 'locked' if self.holding else f'scanning {self.index + 1}/{len(self.positions)}'
+        return f'stepped AF: {mode}, focus {self.current:g}'
 
 
 def read_frame(cap):
@@ -179,6 +289,12 @@ def camera_model(path, size):
 
 def track(args):
     cap = open_camera(args)
+    stepped_focus = SteppedAutofocus(
+        cap,
+        args.focus_steps,
+        settle_frames=args.focus_settle_frames,
+        hold_frames=args.focus_hold_frames,
+    )
     log = None
     try:
         frame = read_frame(cap)
@@ -200,17 +316,33 @@ def track(args):
                              'x_mm', 'y_mm', 'z_mm', 'distance_mm', 'roll_deg', 'pitch_deg',
                              'yaw_deg', 'rx_rad', 'ry_rad', 'rz_rad', 'reprojection_rms_px'])
         detect = detector()
-        deblurrer = Deblurrer((height, width))
+        detection_shape = downsample_gray(frame, args.detection_scale).shape
+        deblurrer = Deblurrer(detection_shape)
         start = time.monotonic()
         while True:
             if frame.shape[:2] != (height, width):
                 raise RuntimeError('Camera resolution changed; restart and recalibrate.')
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            stepped_focus.update(frame)
+            gray = downsample_gray(frame, args.detection_scale)
             if args.deblur:
-                corners, ids, stage = detect_deblurred(detect, deblurrer, gray, args.id)
+                corners, ids, stage = detect_deblurred(
+                    detect, deblurrer, gray, args.id, threshold=args.threshold
+                )
             else:
-                corners, ids, _ = detect.detectMarkers(gray)
-                stage = 'off'
+                detection_image = otsu_threshold(gray) if args.threshold else gray
+                corners, ids, _ = detect.detectMarkers(detection_image)
+                stage = 'Otsu B/W' if args.threshold else 'off'
+            corners = restore_corner_scale(corners, args.detection_scale)
+            if args.threshold:
+                preview = cv2.resize(
+                    otsu_threshold(gray), (width, height), interpolation=cv2.INTER_NEAREST
+                )
+                frame = cv2.cvtColor(preview, cv2.COLOR_GRAY2BGR)
+            else:
+                # Keep a three-channel display canvas for colored annotations,
+                # but show the camera image itself in grayscale.
+                preview = cv2.resize(gray, (width, height), interpolation=cv2.INTER_LINEAR)
+                frame = cv2.cvtColor(preview, cv2.COLOR_GRAY2BGR)
             pose = None
             if ids is not None:
                 cv2.aruco.drawDetectedMarkers(frame, corners, ids)
@@ -221,8 +353,9 @@ def track(args):
             elapsed = time.monotonic() - start
             text(frame, mode, 0, (0, 255, 255))
             text(frame, f'q: quit | s: save annotated image | deblur: {stage}', 1)
+            text(frame, stepped_focus.status, 2, (0, 255, 255))
             if pose is None:
-                text(frame, f'ID {args.id}: NOT VISIBLE (no current pose)', 2, (0, 100, 255))
+                text(frame, f'ID {args.id}: NOT VISIBLE (no current pose)', 3, (0, 100, 255))
                 if log:
                     writer.writerow([now, elapsed, 0, args.id, int(bool(args.calibration))] + [''] * 11)
             else:
@@ -231,9 +364,9 @@ def track(args):
                 distance = float(np.linalg.norm(xyz))
                 angles = euler_degrees(cv2.Rodrigues(rvec)[0])
                 cv2.drawFrameAxes(frame, matrix, distortion, rvec, tvec, args.marker_mm * .5, 2)
-                text(frame, f'ID {args.id} | X {xyz[0]:.1f}  Y {xyz[1]:.1f}  Z {xyz[2]:.1f} mm', 2)
-                text(frame, f'Distance {distance:.1f} mm | corner error {error:.2f} px', 3)
-                text(frame, f'Roll {angles[0]:.1f}  Pitch {angles[1]:.1f}  Yaw {angles[2]:.1f} deg', 4)
+                text(frame, f'ID {args.id} | X {xyz[0]:.1f}  Y {xyz[1]:.1f}  Z {xyz[2]:.1f} mm', 3)
+                text(frame, f'Distance {distance:.1f} mm | corner error {error:.2f} px', 4)
+                text(frame, f'Roll {angles[0]:.1f}  Pitch {angles[1]:.1f}  Yaw {angles[2]:.1f} deg', 5)
                 if log:
                     writer.writerow([now, elapsed, 1, args.id, int(bool(args.calibration)),
                                      *xyz, distance, *angles, *rvec.ravel(), error])
@@ -317,6 +450,18 @@ def positive(value):
     return number
 
 
+def focus_positions(value):
+    try:
+        positions = tuple(float(item.strip()) for item in value.split(','))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError('must be comma-separated numbers') from error
+    if len(positions) != 10:
+        raise argparse.ArgumentTypeError('must contain exactly ten focus positions')
+    if not all(math.isfinite(position) and position >= 0 for position in positions):
+        raise argparse.ArgumentTypeError('focus positions must be finite and non-negative')
+    return positions
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -335,9 +480,30 @@ def main():
     tracking.add_argument('--hfov', type=positive, default=60, help='Assumed horizontal FOV for uncalibrated preview')
     tracking.add_argument('--no-deblur', dest='deblur', action='store_false',
                           help='disable the defocus-recovery step before detection')
+    tracking.add_argument(
+        '--focus-steps', type=focus_positions,
+        default=focus_positions('0,28,57,85,113,142,170,198,227,255'),
+        help='ten comma-separated manual lens positions (default: 0,28,57,85,113,142,170,198,227,255)'
+    )
+    tracking.add_argument(
+        '--focus-settle-frames', type=int, default=0,
+        help='frames to wait after each focus movement (default: 0)'
+    )
+    tracking.add_argument(
+        '--focus-hold-frames', type=int, default=5,
+        help='frames to hold the selected focus before rescanning (default: 5)'
+    )
+    tracking.add_argument('--detection-scale', type=positive, default=1.0,
+                          help='detection resolution multiplier (default: 1.0)')
+    tracking.add_argument('--threshold', action='store_true',
+                          help='enable Otsu black/white thresholding')
     tracking.add_argument('--csv', help='Optional output CSV; overwritten on each run')
     for camera_parser in (cal, tracking):
         camera_parser.add_argument('--camera', type=int, default=0)
+        camera_parser.add_argument(
+            '--focus', type=float,
+            help='fixed manual focus value after autofocus is disabled (device-specific)'
+        )
         camera_parser.add_argument('--width', type=int, default=None,
                                    help=f'default: calibration width for track, else {WIDTH}')
         camera_parser.add_argument('--height', type=int, default=None,
@@ -356,6 +522,13 @@ def main():
             args.height = HEIGHT
     if args.command == 'track' and args.hfov >= 179:
         parser.error('--hfov must be less than 179 degrees')
+    if args.command == 'track' and args.detection_scale > 1:
+        parser.error('--detection-scale must be at most 1')
+    if args.command == 'track' and (args.focus_settle_frames < 0 or args.focus_hold_frames <= 0):
+        parser.error('focus settle frames must be non-negative and hold frames must be positive')
+    if args.command in ('calibrate', 'track') and args.focus is not None:
+        if not math.isfinite(args.focus) or args.focus < 0:
+            parser.error('--focus must be finite and non-negative')
     try:
         if args.command == 'marker':
             write_image(args.output, marker_image(args.id))
